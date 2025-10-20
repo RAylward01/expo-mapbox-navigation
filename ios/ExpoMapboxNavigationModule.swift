@@ -1,4 +1,5 @@
 import ExpoModulesCore
+import CoreLocation
 
 public class ExpoMapboxNavigationModule: Module {
 
