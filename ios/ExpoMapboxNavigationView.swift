@@ -61,6 +61,12 @@ class ExpoMapboxNavigationViewController: UIViewController {
     var isUsingRouteMatchingApi: Bool = false
     var vehicleMaxHeight: Double? = nil
     var vehicleMaxWidth: Double? = nil
+    var force2D: Bool = false
+    var useMetricUnits: Bool = true
+    
+    // Throttling properties
+    private var lastCameraUpdateTime: TimeInterval = 0
+    private let cameraUpdateInterval: TimeInterval = 0.5 // 500ms in seconds
 
     var onRouteProgressChanged: EventDispatcher? = nil
     var onCancelNavigation: EventDispatcher? = nil
@@ -76,6 +82,7 @@ class ExpoMapboxNavigationViewController: UIViewController {
     private var waypointArrivalCancellable: AnyCancellable? = nil
     private var reroutingCancellable: AnyCancellable? = nil
     private var sessionCancellable: AnyCancellable? = nil
+    private var locationUpdateCancellable: AnyCancellable? = nil
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -121,6 +128,24 @@ class ExpoMapboxNavigationViewController: UIViewController {
             }
         }
 
+        // Add throttled location updates for camera
+        setupThrottledLocationUpdates()
+    }
+    
+    private func setupThrottledLocationUpdates() {
+        locationUpdateCancellable = navigation?.locationMatching
+            .compactMap { $0.location }
+            .throttle(for: .seconds(cameraUpdateInterval),
+                    scheduler: DispatchQueue.main,
+                    latest: true)
+            .sink { [weak self] location in
+                guard let self = self else { return }
+                let currentTime = Date().timeIntervalSince1970
+                
+                if currentTime - self.lastCameraUpdateTime >= self.cameraUpdateInterval {
+                    self.lastCameraUpdateTime = currentTime
+                }
+            }
     }
 
     deinit {
@@ -128,11 +153,12 @@ class ExpoMapboxNavigationViewController: UIViewController {
         waypointArrivalCancellable?.cancel()
         reroutingCancellable?.cancel()
         sessionCancellable?.cancel()
+        locationUpdateCancellable?.cancel()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        Task { @MainActor in tripSession?.setToIdle() } // Stops navigation
+        Task { @MainActor in tripSession?.setToIdle() }
     }
 
     required init?(coder aDecoder: NSCoder) {
@@ -244,10 +270,28 @@ class ExpoMapboxNavigationViewController: UIViewController {
         currentDisableAlternativeRoutes = disableAlternativeRoutes
         update()
     }
+    
+    func setForce2D(force2D: Bool?) {
+        self.force2D = force2D ?? false
+        update()
+        
+        let pitch: CGFloat = force2D == true ? 0.0 : 40.0
+        let navigationMapView = navigationViewController?.navigationMapView
+        navigationMapView?.mapView.mapboxMap.setCamera(to: CameraOptions(pitch: pitch))
+    }
+    
+    func setUseMetricUnits(useMetric: Bool?) {
+        self.useMetricUnits = useMetric ?? true
+        update()
+    }
 
     func recenterMap(){
         let navigationMapView = navigationViewController?.navigationMapView
         navigationMapView?.navigationCamera.update(cameraState: .following)
+        
+        if force2D {
+            navigationMapView?.mapView.mapboxMap.setCamera(to: CameraOptions(pitch: 0.0))
+        }
     }
 
     func setIsMuted(isMuted: Bool?){
@@ -261,7 +305,12 @@ class ExpoMapboxNavigationViewController: UIViewController {
         initialLocationZoom = zoom
         let navigationMapView = navigationViewController?.navigationMapView
         if(initialLocation != nil && navigationMapView != nil){
-            navigationMapView!.mapView.mapboxMap.setCamera(to: CameraOptions(center: initialLocation!, zoom: initialLocationZoom ?? 15))
+            let pitch: CGFloat? = force2D ? 0.0 : nil
+            navigationMapView!.mapView.mapboxMap.setCamera(to: CameraOptions(
+                center: initialLocation!, 
+                zoom: initialLocationZoom ?? 15,
+                pitch: pitch
+            ))
         }
     }
 
@@ -286,16 +335,20 @@ class ExpoMapboxNavigationViewController: UIViewController {
     }
 
     func calculateRoutes(waypoints: Array<Waypoint>){
+        // Determine distance unit based on useMetricUnits property
+        let distanceUnit: LengthFormatter.Unit = useMetricUnits ? .meter : .mile
+        
         let routeOptions = NavigationRouteOptions(
             waypoints: waypoints, 
             profileIdentifier: currentRouteProfile != nil ? ProfileIdentifier(rawValue: currentRouteProfile!) : nil,
             queryItems: [
                 URLQueryItem(name: "exclude", value: currentRouteExcludeList?.joined(separator: ",")),
                 URLQueryItem(name: "max_height", value: String(format: "%.1f", vehicleMaxHeight ?? 0.0)),
-                URLQueryItem(name: "max_width", value: String(format: "%.1f", vehicleMaxWidth ?? 0.0))
+                URLQueryItem(name: "max_width", value: String(format: "%.1f", vehicleMaxWidth ?? 0.0)),
+                URLQueryItem(name: "voice_units", value: useMetricUnits ? "metric" : "imperial")
             ],
             locale: currentLocale, 
-            distanceUnit: currentLocale.usesMetricSystem ? LengthFormatter.Unit.meter : LengthFormatter.Unit.mile
+            distanceUnit: distanceUnit
         )
 
         calculateRoutesTask = Task {
@@ -312,11 +365,14 @@ class ExpoMapboxNavigationViewController: UIViewController {
     }
 
     func calculateMapMatchingRoutes(waypoints: Array<Waypoint>){
+        // Determine distance unit based on useMetricUnits property
+        let distanceUnit: LengthFormatter.Unit = useMetricUnits ? .meter : .mile
+        
         let matchOptions = NavigationMatchOptions(
             waypoints: waypoints, 
             profileIdentifier: currentRouteProfile != nil ? ProfileIdentifier(rawValue: currentRouteProfile!) : nil,
             queryItems: [URLQueryItem(name: "exclude", value: currentRouteExcludeList?.joined(separator: ","))],
-            distanceUnit: currentLocale.usesMetricSystem ? LengthFormatter.Unit.meter : LengthFormatter.Unit.mile
+            distanceUnit: distanceUnit
         )
         matchOptions.locale = currentLocale
 
@@ -416,7 +472,12 @@ class ExpoMapboxNavigationViewController: UIViewController {
         navigationMapView!.puckType = .puck2D(.navigationDefault)
 
         if(initialLocation != nil && newNavigationControllerRequired){
-            navigationMapView!.mapView.mapboxMap.setCamera(to: CameraOptions(center: initialLocation!, zoom: initialLocationZoom ?? 15))
+            let pitch: CGFloat? = force2D ? 0.0 : nil
+            navigationMapView!.mapView.mapboxMap.setCamera(to: CameraOptions(
+                center: initialLocation!, 
+                zoom: initialLocationZoom ?? 15,
+                pitch: pitch
+            ))
         }
 
         let style = currentMapStyle != nil ? StyleURI(rawValue: currentMapStyle!) : StyleURI.streets
@@ -426,6 +487,10 @@ class ExpoMapboxNavigationViewController: UIViewController {
                 try navigationMapView!.mapView.mapboxMap.localizeLabels(into: self.currentLocale)
             } catch {}
             self.addCustomRasterLayer()
+            
+            if self.force2D {
+                navigationMapView!.mapView.mapboxMap.setCamera(to: CameraOptions(pitch: 0.0))
+            }
         })
         
 
@@ -446,6 +511,7 @@ class ExpoMapboxNavigationViewController: UIViewController {
         mapboxNavigation!.tripSession().startActiveGuidance(with: navigationRoutes, startLegIndex: 0)
     }
 }
+
 extension ExpoMapboxNavigationViewController: NavigationViewControllerDelegate {
     func navigationViewController(_ navigationViewController: NavigationViewController, didRerouteAlong route: Route) {
         onRoutesLoaded?([
