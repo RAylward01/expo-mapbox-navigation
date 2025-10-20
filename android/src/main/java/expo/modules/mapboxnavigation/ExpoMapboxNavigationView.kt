@@ -72,7 +72,7 @@ import com.mapbox.navigation.ui.components.maps.camera.view.MapboxRecenterButton
 import com.mapbox.navigation.ui.components.maps.camera.view.MapboxRouteOverviewButton
 import com.mapbox.navigation.ui.components.voice.view.MapboxSoundButton
 import com.mapbox.navigation.ui.maps.camera.NavigationCamera
-import com.mapbox.navigation.ui.maps.camera.data.FollowingFrameOptions.FocalPoint
+import com.mapbox.navigation.ui.maps.camera.data.FollowingFrameOptions
 import com.mapbox.navigation.ui.maps.camera.data.MapboxNavigationViewportDataSource
 import com.mapbox.navigation.ui.maps.camera.lifecycle.NavigationBasicGesturesHandler
 import com.mapbox.navigation.ui.maps.camera.state.NavigationCameraState
@@ -90,6 +90,7 @@ import com.mapbox.navigation.voice.model.SpeechAnnouncement
 import com.mapbox.navigation.voice.model.SpeechError
 import com.mapbox.navigation.voice.model.SpeechValue
 import com.mapbox.navigation.voice.model.SpeechVolume
+import com.mapbox.navigation.base.formatter.UnitType
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
@@ -98,16 +99,11 @@ import java.util.Locale
 val PIXEL_DENSITY = Resources.getSystem().displayMetrics.density
 
 class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
-        ExpoView(context, appContext) {
+    ExpoView(context, appContext) {
 
-    // Set view tree lifecycle owner to the activity
-    // Otherwise leads to crashes when mapbox package tries to query the view tree lifecycle
-    // owner
-    // and gets null. Not set automatically for some reason.
-    // https://github.com/mapbox/mapbox-navigation-android/blob/188d4781b31bb328733eeca593edc8087e38d915/ui-utils/src/main/java/com/mapbox/navigation/ui/utils/internal/lifecycle/ViewLifecycleRegistry.kt#L67
     init {
         this.setViewTreeLifecycleOwner(
-                appContext.activityProvider?.currentActivity as LifecycleOwner
+            appContext.activityProvider?.currentActivity as LifecycleOwner
         )
     }
 
@@ -126,6 +122,11 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
     private var currentDisableAlternativeRoutes: Boolean? = null
     private var vehicleMaxHeight: Double? = null
     private var vehicleMaxWidth: Double? = null
+    private var force2D: Boolean = false
+    private var useMetricUnits: Boolean = true
+
+    private var lastCameraUpdateTime = 0L
+    private val cameraUpdateInterval = 500L 
 
     private val onRouteProgressChanged by EventDispatcher()
     private val onCancelNavigation by EventDispatcher()
@@ -140,12 +141,12 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
     private var mapboxStyle: Style? = null
     private val navigationLocationProvider = NavigationLocationProvider()
     private var voiceInstructionsPlayer =
-            MapboxVoiceInstructionsPlayer(context, currentLocale.toLanguageTag())
+        MapboxVoiceInstructionsPlayer(context, currentLocale.toLanguageTag())
 
     private val parentConstraintLayout =
-            ConstraintLayout(context).also {
-                addView(it, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-            }
+        ConstraintLayout(context).also {
+            addView(it, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        }
 
     private val mapViewId = 1
     private val mapView = createMapView(mapViewId, parentConstraintLayout)
@@ -153,284 +154,276 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
 
     private val viewportDataSource = createViewportDataSource(mapboxMap)
     private val navigationCamera =
-            NavigationCamera(mapboxMap, mapView.camera, viewportDataSource).apply {
-                mapView.camera.addCameraAnimationsLifecycleListener(
-                        NavigationBasicGesturesHandler(this)
-                )
-            }
+        NavigationCamera(mapboxMap, mapView.camera, viewportDataSource).apply {
+            mapView.camera.addCameraAnimationsLifecycleListener(
+                NavigationBasicGesturesHandler(this)
+            )
+        }
 
     private val maneuverViewId = 2
-    private val maneuverView = createManueverView(maneuverViewId, parentConstraintLayout)
+    private val maneuverView = createManeuverView(maneuverViewId, parentConstraintLayout)
 
     private val tripProgressViewId = 3
     private val tripProgressTimeRemainingTextView = createCenteredTextView()
     private val tripProgressDistanceRemainingTextView = createCenteredTextView()
     private val tripProgressArrivalTimeTextView = createCenteredTextView()
     private val tripProgressView =
-            createTripProgressView(
-                    id = tripProgressViewId,
-                    parent = parentConstraintLayout,
-                    tripProgressTimeRemainingTextView = tripProgressTimeRemainingTextView,
-                    tripProgressDistanceRemainingTextView = tripProgressDistanceRemainingTextView,
-                    tripProgressArrivalTimeTextView = tripProgressArrivalTimeTextView
-            )
+        createTripProgressView(
+            id = tripProgressViewId,
+            parent = parentConstraintLayout,
+            tripProgressTimeRemainingTextView = tripProgressTimeRemainingTextView,
+            tripProgressDistanceRemainingTextView = tripProgressDistanceRemainingTextView,
+            tripProgressArrivalTimeTextView = tripProgressArrivalTimeTextView
+        )
 
     private val soundButtonId = 4
     private val soundButton =
-            createSoundButton(soundButtonId, parentConstraintLayout) {
-                voiceInstructionsPlayer.volume(SpeechVolume(if (isMuted) 1.0f else 0.0f))
-                it.findViewById<ImageView>(com.mapbox.navigation.ui.components.R.id.buttonIcon)
-                        .setImageResource(
-                                if (isMuted) R.drawable.icon_sound else R.drawable.icon_mute
-                        )
-                isMuted = !isMuted
-            }
+        createSoundButton(soundButtonId, parentConstraintLayout) {
+            voiceInstructionsPlayer.volume(SpeechVolume(if (isMuted) 1.0f else 0.0f))
+            it.findViewById<ImageView>(com.mapbox.navigation.ui.components.R.id.buttonIcon)
+                .setImageResource(
+                    if (isMuted) R.drawable.icon_sound else R.drawable.icon_mute
+                )
+            isMuted = !isMuted
+        }
 
     private val overviewButtonId = 5
     private val overviewButton =
-            createOverviewButton(overviewButtonId, parentConstraintLayout) {
-                navigationCamera.requestNavigationCameraToOverview()
-            }
+        createOverviewButton(overviewButtonId, parentConstraintLayout) {
+            navigationCamera.requestNavigationCameraToOverview()
+        }
 
     private val recenterButtonId = 6
     private val recenterButton =
-            createRecenterButton(recenterButtonId, parentConstraintLayout) {
-                navigationCamera.requestNavigationCameraToFollowing()
-            }
+        createRecenterButton(recenterButtonId, parentConstraintLayout) {
+            navigationCamera.requestNavigationCameraToFollowing()
+        }
 
     private val cancelButtonId = 7
     private val cancelButton =
-            createCancelButton(cancelButtonId, parentConstraintLayout) {
-                onCancelNavigation(mapOf())
-            }
+        createCancelButton(cancelButtonId, parentConstraintLayout) {
+            onCancelNavigation(mapOf())
+        }
 
     private val parentConstraintSet =
-            createAndApplyConstraintSet(
-                    mapViewId = mapViewId,
-                    maneuverViewId = maneuverViewId,
-                    tripProgressViewId = tripProgressViewId,
-                    soundButtonId = soundButtonId,
-                    overviewButtonId = overviewButtonId,
-                    recenterButtonId = recenterButtonId,
-                    cancelButtonId = cancelButtonId,
-                    constraintLayout = parentConstraintLayout
-            )
+        createAndApplyConstraintSet(
+            mapViewId = mapViewId,
+            maneuverViewId = maneuverViewId,
+            tripProgressViewId = tripProgressViewId,
+            soundButtonId = soundButtonId,
+            overviewButtonId = overviewButtonId,
+            recenterButtonId = recenterButtonId,
+            cancelButtonId = cancelButtonId,
+            constraintLayout = parentConstraintLayout
+        )
 
     private val routeLineApiOptions = MapboxRouteLineApiOptions.Builder().build()
     private val routeLineApi = MapboxRouteLineApi(routeLineApiOptions)
 
     private val routeLineViewOptions =
-            MapboxRouteLineViewOptions.Builder(context).routeLineBelowLayerId("road-label").build()
+        MapboxRouteLineViewOptions.Builder(context).routeLineBelowLayerId("road-label").build()
     private val routeLineView = MapboxRouteLineView(routeLineViewOptions)
 
     private val routeArrow = MapboxRouteArrowApi()
     private val routeArrowOptions =
-            RouteArrowOptions.Builder(context)
-                    .withAboveLayerId(TOP_LEVEL_ROUTE_LINE_LAYER_ID)
-                    .build()
+        RouteArrowOptions.Builder(context)
+            .withAboveLayerId(TOP_LEVEL_ROUTE_LINE_LAYER_ID)
+            .build()
     private val routeArrowView = MapboxRouteArrowView(routeArrowOptions)
 
     private val distanceFormatter = DistanceFormatterOptions.Builder(context).build()
     private var maneuverApi = MapboxManeuverApi(MapboxDistanceFormatter(distanceFormatter))
 
     private var tripProgressFormatter =
-            TripProgressUpdateFormatter.Builder(context)
-                    .distanceRemainingFormatter(DistanceRemainingFormatter(distanceFormatter))
-                    .timeRemainingFormatter(TimeRemainingFormatter(context))
-                    .estimatedTimeToArrivalFormatter(EstimatedTimeToArrivalFormatter(context))
-                    .build()
+        TripProgressUpdateFormatter.Builder(context)
+            .distanceRemainingFormatter(DistanceRemainingFormatter(distanceFormatter))
+            .timeRemainingFormatter(TimeRemainingFormatter(context))
+            .estimatedTimeToArrivalFormatter(EstimatedTimeToArrivalFormatter(context))
+            .build()
     private var tripProgressApi = MapboxTripProgressApi(tripProgressFormatter)
 
     private var speechApi = MapboxSpeechApi(context, currentLocale.toLanguageTag())
     private val voiceInstructionsPlayerCallback =
-            MapboxNavigationConsumer<SpeechAnnouncement> { value -> speechApi.clean(value) }
+        MapboxNavigationConsumer<SpeechAnnouncement> { value -> speechApi.clean(value) }
 
     private val speechCallback =
-            MapboxNavigationConsumer<Expected<SpeechError, SpeechValue>> { expected ->
-                expected.fold(
-                        { error ->
-                            voiceInstructionsPlayer.play(
-                                    error.fallback,
-                                    voiceInstructionsPlayerCallback
-                            )
-                        },
-                        { value ->
-                            voiceInstructionsPlayer.play(
-                                    value.announcement,
-                                    voiceInstructionsPlayerCallback
-                            )
-                        }
-                )
-            }
+        MapboxNavigationConsumer<Expected<SpeechError, SpeechValue>> { expected ->
+            expected.fold(
+                { error ->
+                    voiceInstructionsPlayer.play(
+                        error.fallback,
+                        voiceInstructionsPlayerCallback
+                    )
+                },
+                { value ->
+                    voiceInstructionsPlayer.play(
+                        value.announcement,
+                        voiceInstructionsPlayerCallback
+                    )
+                }
+            )
+        }
     private val voiceInstructionsObserver = VoiceInstructionsObserver { voiceInstructions ->
         speechApi.generate(voiceInstructions, speechCallback)
     }
 
     private val routesRequestCallback =
-            object : NavigationRouterCallback {
-                override fun onRoutesReady(
-                        routes: List<NavigationRoute>,
-                        @RouterOrigin routerOrigin: String
-                ) {
-                    onRoutesReady(routes)
-                }
-                override fun onCanceled(
-                        routeOptions: RouteOptions,
-                        @RouterOrigin routerOrigin: String
-                ) {}
-                override fun onFailure(reasons: List<RouterFailure>, routeOptions: RouteOptions) {
-                    onRouteFailedToLoad(mapOf("errorMessage" to reasons.first().message))
-                }
+        object : NavigationRouterCallback {
+            override fun onRoutesReady(
+                routes: List<NavigationRoute>,
+                @RouterOrigin routerOrigin: String
+            ) {
+                onRoutesReady(routes)
             }
+            override fun onCanceled(
+                routeOptions: RouteOptions,
+                @RouterOrigin routerOrigin: String
+            ) {}
+            override fun onFailure(reasons: List<RouterFailure>, routeOptions: RouteOptions) {
+                onRouteFailedToLoad(mapOf("errorMessage" to reasons.first().message))
+            }
+        }
 
     @com.mapbox.navigation.base.ExperimentalPreviewMapboxNavigationAPI
     private val mapMatchingRequestCallback =
-            object : MapMatchingAPICallback {
-                override fun success(result: MapMatchingSuccessfulResult) {
-                    onRoutesReady(result.navigationRoutes)
-                }
-                override fun onCancel() {}
-                override fun failure(failure: MapMatchingFailure) {}
+        object : MapMatchingAPICallback {
+            override fun success(result: MapMatchingSuccessfulResult) {
+                onRoutesReady(result.navigationRoutes)
             }
+            override fun onCancel() {}
+            override fun failure(failure: MapMatchingFailure) {}
+        }
 
     private val routesObserver =
-            object : RoutesObserver {
-                override fun onRoutesChanged(result: RoutesUpdatedResult) {
-                    // Handle viewport data source
-                    if (result.navigationRoutes.isNotEmpty()) {
-                        viewportDataSource.onRouteChanged(result.navigationRoutes.first())
-                        viewportDataSource.evaluate()
-                    } else {
-                        viewportDataSource.clearRouteData()
-                        viewportDataSource.evaluate()
-                    }
-
-                    // Handle route lines
-                    val alternativesMetadata =
-                            mapboxNavigation?.getAlternativeMetadataFor(result.navigationRoutes)
-                    if (alternativesMetadata != null) {
-                        routeLineApi.setNavigationRoutes(
-                                result.navigationRoutes,
-                                alternativesMetadata
-                        ) { value ->
-                            mapboxStyle?.let { routeLineView.renderRouteDrawData(it, value) }
-                        }
-                    }
-
-                    // Clear speech
-                    speechApi.cancel()
-                    voiceInstructionsPlayer.clear()
-
-                    // Add observer to navigation camera
-                    navigationCamera.registerNavigationCameraStateChangeObserver {
-                            navigationCameraState ->
-                        // shows/hide the recenter button depending on the camera
-                        // state
-                        when (navigationCameraState) {
-                            NavigationCameraState.TRANSITION_TO_FOLLOWING,
-                            NavigationCameraState.FOLLOWING -> recenterButton.visibility = View.GONE
-                            NavigationCameraState.TRANSITION_TO_OVERVIEW,
-                            NavigationCameraState.OVERVIEW,
-                            NavigationCameraState.IDLE -> recenterButton.visibility = View.VISIBLE
-                        }
-                    }
-
-                    this@ExpoMapboxNavigationView.onRouteChanged(mapOf())
+        object : RoutesObserver {
+            override fun onRoutesChanged(result: RoutesUpdatedResult) {
+                if (result.navigationRoutes.isNotEmpty()) {
+                    viewportDataSource.onRouteChanged(result.navigationRoutes.first())
+                    viewportDataSource.evaluate()
+                } else {
+                    viewportDataSource.clearRouteData()
+                    viewportDataSource.evaluate()
                 }
+
+                val alternativesMetadata =
+                    mapboxNavigation?.getAlternativeMetadataFor(result.navigationRoutes)
+                if (alternativesMetadata != null) {
+                    routeLineApi.setNavigationRoutes(
+                        result.navigationRoutes,
+                        alternativesMetadata
+                    ) { value ->
+                        mapboxStyle?.let { routeLineView.renderRouteDrawData(it, value) }
+                    }
+                }
+
+                speechApi.cancel()
+                voiceInstructionsPlayer.clear()
+
+                navigationCamera.registerNavigationCameraStateChangeObserver {
+                        navigationCameraState ->
+                    when (navigationCameraState) {
+                        NavigationCameraState.TRANSITION_TO_FOLLOWING,
+                        NavigationCameraState.FOLLOWING -> recenterButton.visibility = View.GONE
+                        NavigationCameraState.TRANSITION_TO_OVERVIEW,
+                        NavigationCameraState.OVERVIEW,
+                        NavigationCameraState.IDLE -> recenterButton.visibility = View.VISIBLE
+                    }
+                }
+
+                this@ExpoMapboxNavigationView.onRouteChanged(mapOf())
             }
+        }
 
     private val routeProgressObserver =
-            object : RouteProgressObserver {
-                override fun onRouteProgressChanged(routeProgress: RouteProgress) {
-                    // Handle viewport data source
-                    viewportDataSource.onRouteProgressChanged(routeProgress)
-                    viewportDataSource.evaluate()
+        object : RouteProgressObserver {
+            override fun onRouteProgressChanged(routeProgress: RouteProgress) {
+                viewportDataSource.onRouteProgressChanged(routeProgress)
+                viewportDataSource.evaluate()
 
-                    // Handle route lines
-                    routeLineApi.updateWithRouteProgress(routeProgress) { result ->
-                        mapboxStyle?.let { routeLineView.renderRouteLineUpdate(it, result) }
-                    }
-
-                    // Handle route arrows
-                    val updatedManeuverArrow = routeArrow.addUpcomingManeuverArrow(routeProgress)
-                    mapboxStyle?.let {
-                        routeArrowView.renderManeuverUpdate(it, updatedManeuverArrow)
-                    }
-
-                    // Handle manuevers
-                    val maneuvers = maneuverApi.getManeuvers(routeProgress)
-                    maneuverView.renderManeuvers(maneuvers)
-
-                    // Handle trip progress view
-                    tripProgressApi.getTripProgress(routeProgress).let {
-                            update: TripProgressUpdateValue ->
-                        val formatter = update.formatter
-                        tripProgressTimeRemainingTextView.text =
-                                formatter.getTimeRemaining(update.totalTimeRemaining)
-                        tripProgressDistanceRemainingTextView.text =
-                                formatter.getDistanceRemaining(update.distanceRemaining)
-                        tripProgressArrivalTimeTextView.text =
-                                formatter.getEstimatedTimeToArrival(update.estimatedTimeToArrival)
-                    }
-
-                    // Send progress event
-                    this@ExpoMapboxNavigationView.onRouteProgressChanged(
-                            mapOf(
-                                    "distanceRemaining" to routeProgress.distanceRemaining,
-                                    "distanceTraveled" to routeProgress.distanceTraveled,
-                                    "durationRemaining" to routeProgress.durationRemaining,
-                                    "fractionTraveled" to routeProgress.fractionTraveled
-                            )
-                    )
+                routeLineApi.updateWithRouteProgress(routeProgress) { result ->
+                    mapboxStyle?.let { routeLineView.renderRouteLineUpdate(it, result) }
                 }
+
+                val updatedManeuverArrow = routeArrow.addUpcomingManeuverArrow(routeProgress)
+                mapboxStyle?.let {
+                    routeArrowView.renderManeuverUpdate(it, updatedManeuverArrow)
+                }
+
+                val maneuvers = maneuverApi.getManeuvers(routeProgress)
+                maneuverView.renderManeuvers(maneuvers)
+
+                tripProgressApi.getTripProgress(routeProgress).let {
+                        update: TripProgressUpdateValue ->
+                    val formatter = update.formatter
+                    tripProgressTimeRemainingTextView.text =
+                        formatter.getTimeRemaining(update.totalTimeRemaining)
+                    tripProgressDistanceRemainingTextView.text =
+                        formatter.getDistanceRemaining(update.distanceRemaining)
+                    tripProgressArrivalTimeTextView.text =
+                        formatter.getEstimatedTimeToArrival(update.estimatedTimeToArrival)
+                }
+
+                this@ExpoMapboxNavigationView.onRouteProgressChanged(
+                    mapOf(
+                        "distanceRemaining" to routeProgress.distanceRemaining,
+                        "distanceTraveled" to routeProgress.distanceTraveled,
+                        "durationRemaining" to routeProgress.durationRemaining,
+                        "fractionTraveled" to routeProgress.fractionTraveled
+                    )
+                )
             }
+        }
 
     private val locationObserver =
-            object : LocationObserver {
-                override fun onNewLocationMatcherResult(
-                        locationMatcherResult: LocationMatcherResult
-                ) {
-                    val enhancedLocation = locationMatcherResult.enhancedLocation
+        object : LocationObserver {
+            override fun onNewLocationMatcherResult(
+                locationMatcherResult: LocationMatcherResult
+            ) {
+                val enhancedLocation = locationMatcherResult.enhancedLocation
+                val currentTime = System.currentTimeMillis()
 
-                    // Update puck location
-                    navigationLocationProvider.changePosition(
-                            location = enhancedLocation,
-                            keyPoints = locationMatcherResult.keyPoints,
-                    )
+                // Always update the puck location (this is cheap)
+                navigationLocationProvider.changePosition(
+                    location = enhancedLocation,
+                    keyPoints = locationMatcherResult.keyPoints,
+                )
 
-                    // Update viewport data source
+                // Throttle viewport/camera updates (these are expensive)
+                if (currentTime - lastCameraUpdateTime >= cameraUpdateInterval) {
                     viewportDataSource.onLocationChanged(enhancedLocation)
                     viewportDataSource.evaluate()
+                    lastCameraUpdateTime = currentTime
                 }
-                override fun onNewRawLocation(rawLocation: com.mapbox.common.location.Location) {}
             }
+            override fun onNewRawLocation(rawLocation: com.mapbox.common.location.Location) {}
+        }
 
     private val arrivalObserver =
-            object : ArrivalObserver {
-                override fun onWaypointArrival(routeProgress: RouteProgress) {
-                    onWaypointArrival(
-                            mapOf(
-                                    "distanceRemaining" to routeProgress.distanceRemaining,
-                                    "distanceTraveled" to routeProgress.distanceTraveled,
-                                    "durationRemaining" to routeProgress.durationRemaining,
-                                    "fractionTraveled" to routeProgress.fractionTraveled
-                            )
+        object : ArrivalObserver {
+            override fun onWaypointArrival(routeProgress: RouteProgress) {
+                onWaypointArrival(
+                    mapOf(
+                        "distanceRemaining" to routeProgress.distanceRemaining,
+                        "distanceTraveled" to routeProgress.distanceTraveled,
+                        "durationRemaining" to routeProgress.durationRemaining,
+                        "fractionTraveled" to routeProgress.fractionTraveled
                     )
-                }
-                override fun onNextRouteLegStart(routeLegProgress: RouteLegProgress) {}
-                override fun onFinalDestinationArrival(routeProgress: RouteProgress) {
-                    onFinalDestinationArrival(mapOf())
-                }
+                )
             }
+            override fun onNextRouteLegStart(routeLegProgress: RouteLegProgress) {}
+            override fun onFinalDestinationArrival(routeProgress: RouteProgress) {
+                onFinalDestinationArrival(mapOf())
+            }
+        }
 
     private val offRouteObserver =
-            object : OffRouteObserver {
-                override fun onOffRouteStateChanged(offRoute: Boolean) {
-                    if (offRoute) {
-                        onUserOffRoute(mapOf())
-                    }
+        object : OffRouteObserver {
+            override fun onOffRouteStateChanged(offRoute: Boolean) {
+                if (offRoute) {
+                    onUserOffRoute(mapOf())
                 }
             }
+        }
 
     private val onIndicatorPositionChangedListener = OnIndicatorPositionChangedListener { point ->
         val result = routeLineApi.updateTraveledRouteLine(point)
@@ -442,22 +435,25 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
             setId(id)
             parent.addView(this)
 
-            mapboxMap.loadStyle(Style.MAPBOX_STREETS) { style: Style -> mapboxStyle = style }
+            mapboxMap.loadStyle(Style.MAPBOX_STREETS) { style: Style ->
+                mapboxStyle = style
+                if (force2D) {
+                    mapboxMap.setCamera(
+                        CameraOptions.Builder()
+                            .pitch(0.0)
+                            .build()
+                    )
+                }
+            }
 
             location.apply {
                 locationPuck =
-                        LocationPuck2D(
-                                bearingImage =
-                                        ImageHolder.from(
-                                                com.mapbox
-                                                        .navigation
-                                                        .ui
-                                                        .components
-                                                        .R
-                                                        .drawable
-                                                        .mapbox_navigation_puck_icon
-                                        ),
-                        )
+                    LocationPuck2D(
+                        bearingImage =
+                            ImageHolder.from(
+                                com.mapbox.navigation.ui.components.R.drawable.mapbox_navigation_puck_icon
+                            ),
+                    )
                 setLocationProvider(navigationLocationProvider)
                 puckBearingEnabled = true
                 enabled = true
@@ -465,19 +461,19 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
         }
     }
 
-    private fun createManueverView(id: Int, parent: ViewGroup): MapboxManeuverView {
+    private fun createManeuverView(id: Int, parent: ViewGroup): MapboxManeuverView {
         return MapboxManeuverView(context).apply {
             setId(id)
             parent.addView(this)
 
             val maneuverViewOptions =
-                    ManeuverViewOptions.Builder()
-                            .primaryManeuverOptions(
-                                    ManeuverPrimaryOptions.Builder()
-                                            .textAppearance(R.style.ManeuverTextAppearance)
-                                            .build()
-                            )
+                ManeuverViewOptions.Builder()
+                    .primaryManeuverOptions(
+                        ManeuverPrimaryOptions.Builder()
+                            .textAppearance(R.style.ManeuverTextAppearance)
                             .build()
+                    )
+                    .build()
 
             updateManeuverViewOptions(maneuverViewOptions)
         }
@@ -488,11 +484,11 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
     }
 
     private fun createTripProgressView(
-            id: Int,
-            parent: ViewGroup,
-            tripProgressTimeRemainingTextView: TextView,
-            tripProgressDistanceRemainingTextView: TextView,
-            tripProgressArrivalTimeTextView: TextView
+        id: Int,
+        parent: ViewGroup,
+        tripProgressTimeRemainingTextView: TextView,
+        tripProgressDistanceRemainingTextView: TextView,
+        tripProgressArrivalTimeTextView: TextView
     ): LinearLayout {
         return LinearLayout(context).apply {
             setId(id)
@@ -500,75 +496,75 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
             setOrientation(LinearLayout.VERTICAL)
             setBackgroundColor(Color.WHITE)
             setPadding(
-                    (5 * PIXEL_DENSITY).toInt(),
-                    (5 * PIXEL_DENSITY).toInt(),
-                    (5 * PIXEL_DENSITY).toInt(),
-                    (5 * PIXEL_DENSITY).toInt()
+                (5 * PIXEL_DENSITY).toInt(),
+                (5 * PIXEL_DENSITY).toInt(),
+                (5 * PIXEL_DENSITY).toInt(),
+                (5 * PIXEL_DENSITY).toInt()
             )
 
             addView(
-                    tripProgressTimeRemainingTextView,
-                    LayoutParams.MATCH_PARENT,
-                    (40 * PIXEL_DENSITY).toInt()
+                tripProgressTimeRemainingTextView,
+                LayoutParams.MATCH_PARENT,
+                (40 * PIXEL_DENSITY).toInt()
             )
 
             val bottomContainer =
-                    LinearLayout(context).apply {
-                        setOrientation(LinearLayout.HORIZONTAL)
-                        setGravity(Gravity.CENTER)
-                        addView(
-                                tripProgressDistanceRemainingTextView,
-                                (60 * PIXEL_DENSITY).toInt(),
-                                (20 * PIXEL_DENSITY).toInt()
-                        )
-                        addView(
-                                tripProgressArrivalTimeTextView,
-                                (60 * PIXEL_DENSITY).toInt(),
-                                (20 * PIXEL_DENSITY).toInt()
-                        )
-                    }
+                LinearLayout(context).apply {
+                    setOrientation(LinearLayout.HORIZONTAL)
+                    setGravity(Gravity.CENTER)
+                    addView(
+                        tripProgressDistanceRemainingTextView,
+                        (60 * PIXEL_DENSITY).toInt(),
+                        (20 * PIXEL_DENSITY).toInt()
+                    )
+                    addView(
+                        tripProgressArrivalTimeTextView,
+                        (60 * PIXEL_DENSITY).toInt(),
+                        (20 * PIXEL_DENSITY).toInt()
+                    )
+                }
 
             addView(bottomContainer, LayoutParams.MATCH_PARENT, (20 * PIXEL_DENSITY).toInt())
         }
     }
 
     private fun createSoundButton(
-            id: Int,
-            parent: ViewGroup,
-            onClick: (MapboxSoundButton) -> Unit
+        id: Int,
+        parent: ViewGroup,
+        onClick: (MapboxSoundButton) -> Unit
     ): MapboxSoundButton {
         return MapboxSoundButton(context).apply {
             setId(id)
             parent.addView(this)
             findViewById<ImageView>(com.mapbox.navigation.ui.components.R.id.buttonIcon)
-                    .setImageResource(R.drawable.icon_sound)
+                .setImageResource(R.drawable.icon_sound)
             setOnClickListener { onClick(this) }
         }
     }
 
     private fun createOverviewButton(
-            id: Int,
-            parent: ViewGroup,
-            onClick: () -> Unit
+        id: Int,
+        parent: ViewGroup,
+        onClick: () -> Unit
     ): MapboxRouteOverviewButton {
         return MapboxRouteOverviewButton(context).apply {
             setId(id)
             parent.addView(this)
             findViewById<ImageView>(com.mapbox.navigation.ui.components.R.id.buttonIcon)
-                    .setImageResource(R.drawable.icon_overview)
+                .setImageResource(R.drawable.icon_overview)
             setOnClickListener { onClick() }
         }
     }
 
     private fun createRecenterButton(
-            id: Int,
-            parent: ViewGroup,
-            onClick: () -> Unit
+        id: Int,
+        parent: ViewGroup,
+        onClick: () -> Unit
     ): MapboxRecenterButton {
         return MapboxRecenterButton(context).apply {
             setId(id)
             findViewById<ImageView>(com.mapbox.navigation.ui.components.R.id.buttonIcon)
-                    .setImageResource(R.drawable.icon_compass)
+                .setImageResource(R.drawable.icon_compass)
             parent.addView(this)
             setVisibility(View.GONE)
             setOnClickListener { onClick() }
@@ -576,145 +572,138 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
     }
 
     private fun createCancelButton(
-            id: Int,
-            parent: ViewGroup,
-            onClick: (MapboxSoundButton) -> Unit
+        id: Int,
+        parent: ViewGroup,
+        onClick: (MapboxSoundButton) -> Unit
     ): MapboxSoundButton {
         return MapboxSoundButton(context).apply {
             setId(id)
             parent.addView(this)
             findViewById<ImageView>(com.mapbox.navigation.ui.components.R.id.buttonIcon)
-                    .setImageResource(R.drawable.icon_x)
+                .setImageResource(R.drawable.icon_x)
             setOnClickListener { onClick(this) }
         }
     }
 
     private fun createAndApplyConstraintSet(
-            mapViewId: Int,
-            maneuverViewId: Int,
-            tripProgressViewId: Int,
-            soundButtonId: Int,
-            overviewButtonId: Int,
-            recenterButtonId: Int,
-            cancelButtonId: Int,
-            constraintLayout: ConstraintLayout
+        mapViewId: Int,
+        maneuverViewId: Int,
+        tripProgressViewId: Int,
+        soundButtonId: Int,
+        overviewButtonId: Int,
+        recenterButtonId: Int,
+        cancelButtonId: Int,
+        constraintLayout: ConstraintLayout
     ): ConstraintSet {
         return ConstraintSet().apply {
-            // Add MapView constraints
             connect(mapViewId, ConstraintSet.TOP, ConstraintSet.PARENT_ID, ConstraintSet.TOP)
             connect(mapViewId, ConstraintSet.BOTTOM, tripProgressViewId, ConstraintSet.TOP)
             connect(mapViewId, ConstraintSet.START, ConstraintSet.PARENT_ID, ConstraintSet.START)
             connect(mapViewId, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
 
-            // Add ManeuverView constraints
             connect(
-                    maneuverViewId,
-                    ConstraintSet.TOP,
-                    mapViewId,
-                    ConstraintSet.TOP,
-                    (4 * PIXEL_DENSITY).toInt()
+                maneuverViewId,
+                ConstraintSet.TOP,
+                mapViewId,
+                ConstraintSet.TOP,
+                (4 * PIXEL_DENSITY).toInt()
             )
             connect(
-                    maneuverViewId,
-                    ConstraintSet.START,
-                    ConstraintSet.PARENT_ID,
-                    ConstraintSet.START,
-                    (4 * PIXEL_DENSITY).toInt()
+                maneuverViewId,
+                ConstraintSet.START,
+                ConstraintSet.PARENT_ID,
+                ConstraintSet.START,
+                (4 * PIXEL_DENSITY).toInt()
             )
             connect(
-                    maneuverViewId,
-                    ConstraintSet.END,
-                    ConstraintSet.PARENT_ID,
-                    ConstraintSet.END,
-                    (4 * PIXEL_DENSITY).toInt()
+                maneuverViewId,
+                ConstraintSet.END,
+                ConstraintSet.PARENT_ID,
+                ConstraintSet.END,
+                (4 * PIXEL_DENSITY).toInt()
             )
             constrainHeight(maneuverViewId, ConstraintSet.WRAP_CONTENT)
 
-            // Add TripProgressView constraints
             connect(
-                    tripProgressViewId,
-                    ConstraintSet.BOTTOM,
-                    ConstraintSet.PARENT_ID,
-                    ConstraintSet.BOTTOM
+                tripProgressViewId,
+                ConstraintSet.BOTTOM,
+                ConstraintSet.PARENT_ID,
+                ConstraintSet.BOTTOM
             )
             connect(
-                    tripProgressViewId,
-                    ConstraintSet.START,
-                    ConstraintSet.PARENT_ID,
-                    ConstraintSet.START
+                tripProgressViewId,
+                ConstraintSet.START,
+                ConstraintSet.PARENT_ID,
+                ConstraintSet.START
             )
             connect(
-                    tripProgressViewId,
-                    ConstraintSet.END,
-                    ConstraintSet.PARENT_ID,
-                    ConstraintSet.END
+                tripProgressViewId,
+                ConstraintSet.END,
+                ConstraintSet.PARENT_ID,
+                ConstraintSet.END
             )
             constrainMinHeight(tripProgressViewId, (80 * PIXEL_DENSITY).toInt())
             constrainWidth(tripProgressViewId, ConstraintSet.MATCH_CONSTRAINT)
 
-            // Add SoundButton constraints
             connect(
-                    soundButtonId,
-                    ConstraintSet.TOP,
-                    maneuverViewId,
-                    ConstraintSet.BOTTOM,
-                    (8 * PIXEL_DENSITY).toInt()
+                soundButtonId,
+                ConstraintSet.TOP,
+                maneuverViewId,
+                ConstraintSet.BOTTOM,
+                (8 * PIXEL_DENSITY).toInt()
             )
             connect(
-                    soundButtonId,
-                    ConstraintSet.END,
-                    ConstraintSet.PARENT_ID,
-                    ConstraintSet.END,
-                    (16 * PIXEL_DENSITY).toInt()
+                soundButtonId,
+                ConstraintSet.END,
+                ConstraintSet.PARENT_ID,
+                ConstraintSet.END,
+                (16 * PIXEL_DENSITY).toInt()
             )
             constrainWidth(soundButtonId, ConstraintSet.WRAP_CONTENT)
             constrainHeight(soundButtonId, ConstraintSet.WRAP_CONTENT)
 
-            // Add OverviewButton constraints
             connect(
-                    overviewButtonId,
-                    ConstraintSet.TOP,
-                    soundButtonId,
-                    ConstraintSet.BOTTOM,
-                    (8 * PIXEL_DENSITY).toInt()
+                overviewButtonId,
+                ConstraintSet.TOP,
+                soundButtonId,
+                ConstraintSet.BOTTOM,
+                (8 * PIXEL_DENSITY).toInt()
             )
             connect(
-                    overviewButtonId,
-                    ConstraintSet.END,
-                    ConstraintSet.PARENT_ID,
-                    ConstraintSet.END,
-                    (16 * PIXEL_DENSITY).toInt()
+                overviewButtonId,
+                ConstraintSet.END,
+                ConstraintSet.PARENT_ID,
+                ConstraintSet.END,
+                (16 * PIXEL_DENSITY).toInt()
             )
             constrainWidth(overviewButtonId, ConstraintSet.WRAP_CONTENT)
             constrainHeight(overviewButtonId, ConstraintSet.WRAP_CONTENT)
 
-            // Add RecenterButton constraints
             connect(
-                    recenterButtonId,
-                    ConstraintSet.TOP,
-                    overviewButtonId,
-                    ConstraintSet.BOTTOM,
-                    (8 * PIXEL_DENSITY).toInt()
+                recenterButtonId,
+                ConstraintSet.TOP,
+                overviewButtonId,
+                ConstraintSet.BOTTOM,
+                (8 * PIXEL_DENSITY).toInt()
             )
             connect(
-                    recenterButtonId,
-                    ConstraintSet.END,
-                    ConstraintSet.PARENT_ID,
-                    ConstraintSet.END,
-                    (16 * PIXEL_DENSITY).toInt()
+                recenterButtonId,
+                ConstraintSet.END,
+                ConstraintSet.PARENT_ID,
+                ConstraintSet.END,
+                (16 * PIXEL_DENSITY).toInt()
             )
             constrainWidth(recenterButtonId, ConstraintSet.WRAP_CONTENT)
             constrainHeight(recenterButtonId, ConstraintSet.WRAP_CONTENT)
 
-            // Add CancelButton constraints
             connect(cancelButtonId, ConstraintSet.BOTTOM, tripProgressViewId, ConstraintSet.BOTTOM)
             connect(cancelButtonId, ConstraintSet.TOP, tripProgressViewId, ConstraintSet.TOP)
             connect(
-                    cancelButtonId,
-                    ConstraintSet.END,
-                    ConstraintSet.PARENT_ID,
-                    ConstraintSet.END,
-                    (16 * PIXEL_DENSITY).toInt()
+                cancelButtonId,
+                ConstraintSet.END,
+                ConstraintSet.PARENT_ID,
+                ConstraintSet.END,
+                (16 * PIXEL_DENSITY).toInt()
             )
             constrainWidth(cancelButtonId, ConstraintSet.WRAP_CONTENT)
             constrainHeight(cancelButtonId, ConstraintSet.WRAP_CONTENT)
@@ -724,47 +713,46 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
     }
 
     private fun createViewportDataSource(mapboxMap: MapboxMap): MapboxNavigationViewportDataSource {
-        val portraitOverviewPadding =
-                EdgeInsets(
-                        140.0 * PIXEL_DENSITY,
-                        40.0 * PIXEL_DENSITY,
-                        120.0 * PIXEL_DENSITY,
-                        40.0 * PIXEL_DENSITY
-                )
-        val landscapeOverviewPadding =
-                EdgeInsets(
-                        30.0 * PIXEL_DENSITY,
-                        380.0 * PIXEL_DENSITY,
-                        110.0 * PIXEL_DENSITY,
-                        20.0 * PIXEL_DENSITY
-                )
-        val portraitFollowingPadding =
-                EdgeInsets(
-                        180.0 * PIXEL_DENSITY,
-                        40.0 * PIXEL_DENSITY,
-                        150.0 * PIXEL_DENSITY,
-                        40.0 * PIXEL_DENSITY
-                )
-        val landscapeFollowingPadding =
-                EdgeInsets(
-                        30.0 * PIXEL_DENSITY,
-                        380.0 * PIXEL_DENSITY,
-                        110.0 * PIXEL_DENSITY,
-                        40.0 * PIXEL_DENSITY
-                )
+    val portraitOverviewPadding =
+        EdgeInsets(
+            140.0 * PIXEL_DENSITY,
+            40.0 * PIXEL_DENSITY,
+            120.0 * PIXEL_DENSITY,
+            40.0 * PIXEL_DENSITY
+        )
+    val landscapeOverviewPadding =
+        EdgeInsets(
+            30.0 * PIXEL_DENSITY,
+            380.0 * PIXEL_DENSITY,
+            110.0 * PIXEL_DENSITY,
+            20.0 * PIXEL_DENSITY
+        )
+    val portraitFollowingPadding =
+        EdgeInsets(
+            180.0 * PIXEL_DENSITY,
+            40.0 * PIXEL_DENSITY,
+            150.0 * PIXEL_DENSITY,
+            40.0 * PIXEL_DENSITY
+        )
+    val landscapeFollowingPadding =
+        EdgeInsets(
+            30.0 * PIXEL_DENSITY,
+            380.0 * PIXEL_DENSITY,
+            110.0 * PIXEL_DENSITY,
+            40.0 * PIXEL_DENSITY
+        )
 
-        return MapboxNavigationViewportDataSource(mapboxMap).apply {
-            options.followingFrameOptions.focalPoint = FocalPoint(0.5, 0.9)
-            if (context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-            ) {
-                followingPadding = landscapeFollowingPadding
-                overviewPadding = landscapeOverviewPadding
-            } else {
-                followingPadding = portraitFollowingPadding
-                overviewPadding = portraitOverviewPadding
-            }
+    return MapboxNavigationViewportDataSource(mapboxMap).apply {
+        options.followingFrameOptions.focalPoint = FollowingFrameOptions.FocalPoint(0.5, 0.9)
+        if (context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            followingPadding = landscapeFollowingPadding
+            overviewPadding = landscapeOverviewPadding
+        } else {
+            followingPadding = portraitFollowingPadding
+            overviewPadding = portraitOverviewPadding
         }
     }
+}
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
@@ -791,7 +779,7 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
         speechApi.cancel()
         voiceInstructionsPlayer.shutdown()
         mapView.location.removeOnIndicatorPositionChangedListener(
-                onIndicatorPositionChangedListener
+            onIndicatorPositionChangedListener
         )
         routeLineApi.cancel()
         routeLineView.cancel()
@@ -800,61 +788,70 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
 
     private fun convertRoute(route: NavigationRoute): Map<String, Any> {
         return mapOf(
-                "distance" to route.directionsRoute.distance(),
-                "expectedTravelTime" to route.directionsRoute.duration(),
-                "legs" to
-                        route.directionsRoute.legs()?.map { leg ->
-                            mapOf(
-                                    "steps" to
-                                            leg.steps()?.map { step ->
-                                                val stepGeometry = step.geometry()
-                                                val decodedPoints =
-                                                        stepGeometry?.let {
-                                                            PolylineUtils.decode(it, 6)
-                                                        }
-                                                                ?: emptyList()
-
-                                                mapOf(
-                                                        "shape" to
-                                                                mapOf(
-                                                                        "coordinates" to
-                                                                                decodedPoints.map {
-                                                                                        point ->
-                                                                                    mapOf(
-                                                                                            "latitude" to
-                                                                                                    point.latitude(),
-                                                                                            "longitude" to
-                                                                                                    point.longitude()
-                                                                                    )
-                                                                                }
-                                                                )
-                                                )
+            "distance" to route.directionsRoute.distance(),
+            "expectedTravelTime" to route.directionsRoute.duration(),
+            "legs" to
+                    route.directionsRoute.legs()?.map { leg ->
+                        mapOf(
+                            "steps" to
+                                    leg.steps()?.map { step ->
+                                        val stepGeometry = step.geometry()
+                                        val decodedPoints =
+                                            stepGeometry?.let {
+                                                PolylineUtils.decode(it, 6)
                                             }
-                            )
-                        }
-        ) as
-                Map<String, Any>
+                                                ?: emptyList()
+
+                                        mapOf(
+                                            "shape" to
+                                                    mapOf(
+                                                        "coordinates" to
+                                                                decodedPoints.map {
+                                                                        point ->
+                                                                    mapOf(
+                                                                        "latitude" to
+                                                                                point.latitude(),
+                                                                        "longitude" to
+                                                                                point.longitude()
+                                                                    )
+                                                                }
+                                                    )
+                                        )
+                                    }
+                        )
+                    }
+        ) as Map<String, Any>
     }
 
     private fun onRoutesReady(routes: List<NavigationRoute>) {
         onRoutesLoaded(
-                mapOf(
-                        "routes" to
-                                mapOf(
-                                        "mainRoute" to convertRoute(routes.first()),
-                                        "alternativeRoutes" to
-                                                routes.drop(1).map { convertRoute(it) }
-                                )
-                )
+            mapOf(
+                "routes" to
+                    mapOf(
+                        "mainRoute" to convertRoute(routes.first()),
+                        "alternativeRoutes" to
+                            routes.drop(1).map { convertRoute(it) }
+                    )
+            )
         )
         mapboxNavigation?.setNavigationRoutes(routes)
         mapboxNavigation?.startTripSession(withForegroundService = false)
+        
+        // Use instant transition with no animation
         navigationCamera.requestNavigationCameraToFollowing(
-                stateTransitionOptions =
-                        NavigationCameraTransitionOptions.Builder()
-                                .maxDuration(0) // instant transition
-                                .build()
+            stateTransitionOptions =
+                NavigationCameraTransitionOptions.Builder()
+                    .maxDuration(0) // Already instant, but this ensures it
+                    .build()
         )
+        
+        if (force2D) {
+            mapboxMap.setCamera(
+                CameraOptions.Builder()
+                    .pitch(0.0)
+                    .build()
+            )
+        }
     }
 
     @com.mapbox.navigation.base.ExperimentalPreviewMapboxNavigationAPI
@@ -878,8 +875,8 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
     @com.mapbox.navigation.base.ExperimentalPreviewMapboxNavigationAPI
     fun setLocale(localeStr: String?) {
         currentLocale =
-                if (localeStr == null || localeStr == "default") Locale.getDefault()
-                else Locale.Builder().setLanguageTag(localeStr).build()
+            if (localeStr == null || localeStr == "default") Locale.getDefault()
+            else Locale.Builder().setLanguageTag(localeStr).build()
         update()
     }
 
@@ -918,15 +915,19 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
             isMuted = isMutedProp
             voiceInstructionsPlayer.volume(SpeechVolume(if (isMuted) 0.0f else 1.0f))
             soundButton
-                    .findViewById<ImageView>(com.mapbox.navigation.ui.components.R.id.buttonIcon)
-                    .setImageResource(if (isMuted) R.drawable.icon_mute else R.drawable.icon_sound)
+                .findViewById<ImageView>(com.mapbox.navigation.ui.components.R.id.buttonIcon)
+                .setImageResource(if (isMuted) R.drawable.icon_mute else R.drawable.icon_sound)
         }
     }
 
     fun setInitialLocation(initialLocation: Point?, zoom: Double?) {
         if (initialLocation != null) {
             val cameraOptions =
-                    CameraOptions.Builder().center(initialLocation).zoom(zoom ?: 14.0).build()
+                CameraOptions.Builder()
+                    .center(initialLocation)
+                    .zoom(zoom ?: 14.0)
+                    .pitch(if (force2D) 0.0 else null)
+                    .build()
             mapView.getMapboxMap().setCamera(cameraOptions)
         }
     }
@@ -949,8 +950,36 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
         update()
     }
 
+    @com.mapbox.navigation.base.ExperimentalPreviewMapboxNavigationAPI
+    fun setForce2D(force2D: Boolean?) {
+        this.force2D = force2D ?: false
+        update()
+
+        val pitch = if (force2D == true) 0.0 else 40.0
+
+        // Directly set the camera pitch
+        mapboxMap.setCamera(
+            CameraOptions.Builder()
+                .pitch(pitch)
+                .build()
+        )
+    }
+
+    @com.mapbox.navigation.base.ExperimentalPreviewMapboxNavigationAPI
+    fun setUseMetricUnits(useMetric: Boolean?) {
+        this.useMetricUnits = useMetric ?: false
+        update()
+    }
+
     fun recenterMap() {
         navigationCamera.requestNavigationCameraToFollowing()
+        if (force2D) {
+            mapboxMap.setCamera(
+                CameraOptions.Builder()
+                    .pitch(0.0)
+                    .build()
+            )
+        }
     }
 
     fun addCustomRasterLayer() {
@@ -971,13 +1000,13 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
         }
 
         val rasterSource =
-                RasterSource.Builder(sourceId)
-                        .tileSet(
-                                TileSet.Builder("tileset", listOf(currentCustomRasterSourceUrl!!))
-                                        .build()
-                        )
-                        .tileSize(256)
+            RasterSource.Builder(sourceId)
+                .tileSet(
+                    TileSet.Builder("tileset", listOf(currentCustomRasterSourceUrl!!))
                         .build()
+                )
+                .tileSize(256)
+                .build()
         style.addSource(rasterSource)
 
         val rasterLayer = RasterLayer(layerId, sourceId)
@@ -988,10 +1017,10 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
     @com.mapbox.navigation.base.ExperimentalPreviewMapboxNavigationAPI
     private fun update() {
         voiceInstructionsPlayer =
-                MapboxVoiceInstructionsPlayer(context, currentLocale.toLanguageTag())
+            MapboxVoiceInstructionsPlayer(context, currentLocale.toLanguageTag())
         voiceInstructionsPlayer.volume(
-                SpeechVolume(if (isMuted) 0.0f else 1.0f)
-        ) // Initial volume based on current isMuted state
+            SpeechVolume(if (isMuted) 0.0f else 1.0f)
+        )
         speechApi = MapboxSpeechApi(context, currentLocale.toLanguageTag())
 
         if (currentMapStyle != null) {
@@ -999,24 +1028,40 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
                 mapboxStyle = style
                 style.localizeLabels(currentLocale)
                 addCustomRasterLayer()
+                if (force2D) {
+                    mapboxMap.setCamera(
+                        CameraOptions.Builder()
+                            .pitch(0.0)
+                            .build()
+                    )
+                }
             }
         } else {
             mapboxMap.getStyle { style: Style ->
                 style.localizeLabels(currentLocale)
                 addCustomRasterLayer()
+                if (force2D) {
+                    mapboxMap.setCamera(
+                        CameraOptions.Builder()
+                            .pitch(0.0)
+                            .build()
+                    )
+                }
             }
         }
 
-        val distanceFormatter =
-                DistanceFormatterOptions.Builder(context).locale(currentLocale).build()
+        val distanceFormatter = DistanceFormatterOptions.Builder(context)
+            .locale(currentLocale)
+            .unitType(if (useMetricUnits) UnitType.METRIC else UnitType.IMPERIAL)
+            .build()
         maneuverApi = MapboxManeuverApi(MapboxDistanceFormatter(distanceFormatter))
 
         tripProgressFormatter =
-                TripProgressUpdateFormatter.Builder(context)
-                        .distanceRemainingFormatter(DistanceRemainingFormatter(distanceFormatter))
-                        .timeRemainingFormatter(TimeRemainingFormatter(context, currentLocale))
-                        .estimatedTimeToArrivalFormatter(EstimatedTimeToArrivalFormatter(context))
-                        .build()
+            TripProgressUpdateFormatter.Builder(context)
+                .distanceRemainingFormatter(DistanceRemainingFormatter(distanceFormatter))
+                .timeRemainingFormatter(TimeRemainingFormatter(context, currentLocale))
+                .estimatedTimeToArrivalFormatter(EstimatedTimeToArrivalFormatter(context))
+                .build()
         tripProgressApi = MapboxTripProgressApi(tripProgressFormatter)
 
         if (currentMapMatchingRequestId != null) {
@@ -1038,15 +1083,16 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
 
     private fun requestRoutes() {
         var optionsBuilder =
-                RouteOptions.builder()
-                        .applyDefaultNavigationOptions()
-                        .coordinatesList(currentCoordinates!!)
-                        .steps(true)
-                        .voiceInstructions(true)
-                        .language(currentLocale.toLanguageTag())
-                        .maxHeight(vehicleMaxHeight ?: null)
-                        .maxWidth(vehicleMaxWidth ?: null)
-                        .alternatives(currentDisableAlternativeRoutes != true)
+            RouteOptions.builder()
+                .applyDefaultNavigationOptions()
+                .coordinatesList(currentCoordinates!!)
+                .steps(true)
+                .voiceInstructions(true)
+                .language(currentLocale.toLanguageTag())
+                .maxHeight(vehicleMaxHeight ?: null)
+                .maxWidth(vehicleMaxWidth ?: null)
+                .alternatives(currentDisableAlternativeRoutes != true)
+                .voiceUnits(if (useMetricUnits) "metric" else "imperial")
 
         if (currentWaypointIndices != null) {
             optionsBuilder = optionsBuilder.waypointIndicesList(currentWaypointIndices!!)
@@ -1061,17 +1107,17 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
         }
 
         currentRoutesRequestId =
-                mapboxNavigation?.requestRoutes(optionsBuilder.build(), routesRequestCallback)
+            mapboxNavigation?.requestRoutes(optionsBuilder.build(), routesRequestCallback) ?: return
     }
 
     @com.mapbox.navigation.base.ExperimentalPreviewMapboxNavigationAPI
     private fun requestMapMatchingRoutes() {
         var optionsBuilder =
-                MapMatchingOptions.Builder()
-                        .coordinates(currentCoordinates!!)
-                        .bannerInstructions(true)
-                        .voiceInstructions(true)
-                        .language(currentLocale.toLanguageTag())
+            MapMatchingOptions.Builder()
+                .coordinates(currentCoordinates!!)
+                .bannerInstructions(true)
+                .voiceInstructions(true)
+                .language(currentLocale.toLanguageTag())
 
         if (currentWaypointIndices != null) {
             optionsBuilder = optionsBuilder.waypoints(currentWaypointIndices!!)
@@ -1082,9 +1128,9 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
         }
 
         currentMapMatchingRequestId =
-                mapboxNavigation?.requestMapMatching(
-                        optionsBuilder.build(),
-                        mapMatchingRequestCallback
-                )
+            mapboxNavigation?.requestMapMatching(
+                optionsBuilder.build(),
+                mapMatchingRequestCallback
+            ) ?: return
     }
 }
