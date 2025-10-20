@@ -19,11 +19,11 @@ public class ExpoMapboxNavigationModule: Module {
       Prop("coordinates") { (view: ExpoMapboxNavigationView, coordinates: Array<Dictionary<String, Any>>) in
         var points: Array<CLLocationCoordinate2D> = []
         for coordinate in coordinates {
-          let longValue = coordinate["longitude"]
-          let latValue = coordinate["latitude"]
-          if let long = longValue as? Double, let lat = latValue as? Double {
-            points.append(CLLocationCoordinate2D(latitude: lat, longitude: long))
+          guard let long = coordinate["longitude"] as? Double,
+                let lat = coordinate["latitude"] as? Double else {
+            continue
           }
+          points.append(CLLocationCoordinate2D(latitude: lat, longitude: long))
         }
         view.controller.setCoordinates(coordinates: points)
       }
@@ -65,14 +65,21 @@ public class ExpoMapboxNavigationModule: Module {
       }
       
       Prop("initialLocation") { (view: ExpoMapboxNavigationView, location: Dictionary<String, Any>?) in
-        if(location != nil){
-          let longValue = location!["longitude"]
-          let latValue = location!["latitude"]
-          let zoomValue = location!["zoom"]
-          if let long = longValue as? Double, let lat = latValue as? Double, let zoom = zoomValue as? Double? {
-            view.controller.setInitialLocation(location: CLLocationCoordinate2D(latitude: lat, longitude: long), zoom: zoom)
-          }
+        guard let location = location else { return }
+        
+        guard let long = location["longitude"] as? Double,
+              let lat = location["latitude"] as? Double else {
+          print("ERROR: Invalid initialLocation coordinates")
+          return
         }
+        
+        // Handle zoom as optional Double (not Double?)
+        let zoom = location["zoom"] as? Double
+        
+        view.controller.setInitialLocation(
+          location: CLLocationCoordinate2D(latitude: lat, longitude: long),
+          zoom: zoom
+        )
       }
       
       Prop("customRasterSourceUrl") { (view: ExpoMapboxNavigationView, url: String?) in
