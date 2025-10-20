@@ -29,16 +29,22 @@ class ExpoMapboxNavigationModule : Module() {
       }
     }
 
+    OnActivityEntersBackground {
+      (activity as LifecycleOwner).lifecycleScope.launch(Dispatchers.Main) {
+        MapboxNavigationApp.detach(activity as LifecycleOwner)
+      }
+    }
+
     View(ExpoMapboxNavigationView::class) {
       Events(
-              "onRouteProgressChanged",
-              "onCancelNavigation",
-              "onWaypointArrival",
-              "onFinalDestinationArrival",
-              "onRouteChanged",
-              "onUserOffRoute",
-              "onRoutesLoaded",
-              "onRouteFailedToLoad"
+        "onRouteProgressChanged",
+        "onCancelNavigation",
+        "onWaypointArrival",
+        "onFinalDestinationArrival",
+        "onRouteChanged",
+        "onUserOffRoute",
+        "onRoutesLoaded",
+        "onRouteFailedToLoad"
       )
 
       Prop("coordinates") { view: ExpoMapboxNavigationView, coordinates: List<Map<String, Any>> ->
@@ -110,7 +116,13 @@ class ExpoMapboxNavigationModule : Module() {
         view.setDisableAlternativeRoutes(disableAlternativeRoutes)
       }
 
-      AsyncFunction("recenterMap") { view: ExpoMapboxNavigationView -> view.recenterMap() }
+      Prop("useMetricUnits") { view: ExpoMapboxNavigationView, useMetric: Boolean? ->
+        view.setUseMetricUnits(useMetric)
+      }
+
+      AsyncFunction("recenterMap") { view: ExpoMapboxNavigationView ->
+        view.recenterMap()
+      }
     }
   }
 }
