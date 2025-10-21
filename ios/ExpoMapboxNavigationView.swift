@@ -468,7 +468,8 @@ class ExpoMapboxNavigationViewController: UIViewController {
         navigationViewController.showsContinuousAlternatives = false
         navigationViewController.usesNightStyleWhileInTunnel = false
         navigationViewController.automaticallyAdjustsStyleForTimeOfDay = false
-        
+
+        let navigationMapView = navigationViewController.navigationMapView
         var puckConfig = Puck2DConfiguration.navigationDefault
         puckConfig.pulsing = nil
         navigationMapView!.puckType = .puck2D(puckConfig)
@@ -477,9 +478,6 @@ class ExpoMapboxNavigationViewController: UIViewController {
         navigationMapView!.updatePreferredFrameRate(for: .lowPower)
         
         navigationMapView!.enableFrameByFrameCourseViewTracking(for: false)
-
-        let navigationMapView = navigationViewController.navigationMapView
-        navigationMapView!.puckType = .puck2D(.navigationDefault)
 
         if(initialLocation != nil && newNavigationControllerRequired){
             let pitch: CGFloat? = force2D ? 0.0 : nil
