@@ -107,6 +107,12 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
         )
     }
 
+    private var locationStalenessHandler: android.os.Handler? = null
+    private var locationStalenessRunnable: Runnable? = null
+    private var lastLocationUpdateTime = 0L
+    private var lastKnownLocation: Location? = null
+    private val LOCATION_STALE_THRESHOLD_MS = 8000L
+
     private var isMuted = false
     private var currentCoordinates: List<Point>? = null
     private var currentLocale = Locale.getDefault()
@@ -381,14 +387,15 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
             ) {
                 val enhancedLocation = locationMatcherResult.enhancedLocation
                 val currentTime = System.currentTimeMillis()
-
-                // Always update the puck location (this is cheap)
+    
+                lastLocationUpdateTime = currentTime
+                lastKnownLocation = enhancedLocation
+    
                 navigationLocationProvider.changePosition(
                     location = enhancedLocation,
                     keyPoints = locationMatcherResult.keyPoints,
                 )
-
-                // Throttle viewport/camera updates (these are expensive)
+    
                 if (currentTime - lastCameraUpdateTime >= cameraUpdateInterval) {
                     viewportDataSource.onLocationChanged(enhancedLocation)
                     viewportDataSource.evaluate()
@@ -753,7 +760,7 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
         }
     }
 }
-
+    
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         mapboxNavigation?.registerRoutesObserver(routesObserver)
@@ -763,10 +770,16 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
         mapboxNavigation?.registerArrivalObserver(arrivalObserver)
         mapboxNavigation?.registerOffRouteObserver(offRouteObserver)
         mapView.location.addOnIndicatorPositionChangedListener(onIndicatorPositionChangedListener)
+        
+        // Start monitoring for stale GPS
+        startLocationStalenessMonitor()
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        
+        stopLocationStalenessMonitor()
+        
         mapboxNavigation?.unregisterRoutesObserver(routesObserver)
         mapboxNavigation?.unregisterRouteProgressObserver(routeProgressObserver)
         mapboxNavigation?.unregisterLocationObserver(locationObserver)
@@ -1132,5 +1145,60 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
                 optionsBuilder.build(),
                 mapMatchingRequestCallback
             ) ?: return
+    }
+
+    private fun startLocationStalenessMonitor() {
+        stopLocationStalenessMonitor()
+        
+        locationStalenessHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        locationStalenessRunnable = object : Runnable {
+            override fun run() {
+                val currentTime = System.currentTimeMillis()
+                val timeSinceLastUpdate = currentTime - lastLocationUpdateTime
+                
+                // If we haven't received a location update in LOCATION_STALE_THRESHOLD_MS
+                if (lastLocationUpdateTime > 0 && timeSinceLastUpdate > LOCATION_STALE_THRESHOLD_MS) {
+                    android.util.Log.w("MapboxNav", "Stale GPS detected! Last update: ${timeSinceLastUpdate}ms ago. Restarting trip session.")
+                    restartTripSession()
+                }
+                
+                // Check again in 3 seconds
+                locationStalenessHandler?.postDelayed(this, 3000L)
+            }
+        }
+        
+        locationStalenessHandler?.post(locationStalenessRunnable!!)
+    }
+
+    private fun stopLocationStalenessMonitor() {
+        locationStalenessRunnable?.let {
+            locationStalenessHandler?.removeCallbacks(it)
+        }
+        locationStalenessRunnable = null
+        locationStalenessHandler = null
+    }
+
+    private fun restartTripSession() {
+        try {
+            android.util.Log.d("MapboxNav", "Restarting trip session to recover from stale GPS")
+            
+            // Stop the current trip session
+            mapboxNavigation?.stopTripSession()
+            
+            // Small delay to ensure clean stop
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                // Restart trip session
+                mapboxNavigation?.startTripSession(withForegroundService = false)
+                
+                // Reset tracking variables
+                lastLocationUpdateTime = System.currentTimeMillis()
+                lastKnownLocation = null
+                
+                android.util.Log.d("MapboxNav", "Trip session restarted successfully")
+            }, 100L)
+            
+        } catch (e: Exception) {
+            android.util.Log.e("MapboxNav", "Error restarting trip session", e)
+        }
     }
 }
