@@ -66,7 +66,7 @@ class ExpoMapboxNavigationViewController: UIViewController {
     
     // Throttling properties
     private var lastCameraUpdateTime: TimeInterval = 0
-    private let cameraUpdateInterval: TimeInterval = 0.5 // 500ms in seconds
+    private let cameraUpdateInterval: TimeInterval = 1.0 // 500ms in seconds
 
     var onRouteProgressChanged: EventDispatcher? = nil
     var onCancelNavigation: EventDispatcher? = nil
@@ -465,9 +465,18 @@ class ExpoMapboxNavigationViewController: UIViewController {
         
         let navigationViewController = navigationViewController!
 
-        navigationViewController.showsContinuousAlternatives = currentDisableAlternativeRoutes != true
+        navigationViewController.showsContinuousAlternatives = false
         navigationViewController.usesNightStyleWhileInTunnel = false
         navigationViewController.automaticallyAdjustsStyleForTimeOfDay = false
+        
+        var puckConfig = Puck2DConfiguration.navigationDefault
+        puckConfig.pulsing = nil
+        navigationMapView!.puckType = .puck2D(puckConfig)
+        
+        navigationMapView!.mapView.preferredFramesPerSecond = 30
+        navigationMapView!.updatePreferredFrameRate(for: .lowPower)
+        
+        navigationMapView!.enableFrameByFrameCourseViewTracking(for: false)
 
         let navigationMapView = navigationViewController.navigationMapView
         navigationMapView!.puckType = .puck2D(.navigationDefault)
