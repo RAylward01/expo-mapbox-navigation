@@ -448,6 +448,7 @@ class ExpoMapboxNavigationViewController: UIViewController {
             topBanner: topBanner,
             bottomBanner: bottomBanner
         )
+        navigationOptions.showsEndOfRouteFeedback = false
 
         let newNavigationControllerRequired = navigationViewController == nil
 
