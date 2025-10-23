@@ -395,7 +395,6 @@ class ExpoMapboxNavigationViewController: UIViewController {
         Task { @MainActor in
             self.tripSession?.setToIdle()
             
-            ExpoMapboxNavigationViewController.navigationProvider.routeVoiceController.speechSynthesizer.stopSpeaking(at: .immediate)
             ExpoMapboxNavigationViewController.navigationProvider.routeVoiceController.speechSynthesizer.muted = true
             
             self.routeProgressCancellable?.cancel()
