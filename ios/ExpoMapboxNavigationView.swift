@@ -403,13 +403,6 @@ class ExpoMapboxNavigationViewController: UIViewController {
             self.sessionCancellable?.cancel()
             self.locationUpdateCancellable?.cancel()
             
-            self.navigationViewController?.willMove(toParent: nil)
-            self.navigationViewController?.view.removeFromSuperview()
-            self.navigationViewController?.removeFromParent()
-            self.navigationViewController = nil
-            
-            self.calculateRoutesTask?.cancel()
-            
             self.onCancelNavigation?()
         }
     }
