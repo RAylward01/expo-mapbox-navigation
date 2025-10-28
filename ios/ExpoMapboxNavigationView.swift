@@ -487,6 +487,7 @@ class ExpoMapboxNavigationViewController: UIViewController {
         navigationViewController.showsContinuousAlternatives = false
         navigationViewController.usesNightStyleWhileInTunnel = false
         navigationViewController.automaticallyAdjustsStyleForTimeOfDay = false
+        navigationViewController?.navigationMapView.mapView.preferredFramesPerSecond = 20
 
         let navigationMapView = navigationViewController.navigationMapView
 
