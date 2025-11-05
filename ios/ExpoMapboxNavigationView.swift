@@ -393,16 +393,7 @@ class ExpoMapboxNavigationViewController: UIViewController {
 
     @objc func cancelButtonClicked(_ sender: AnyObject?) {
         Task { @MainActor in
-            self.tripSession?.setToIdle()
-            
             ExpoMapboxNavigationViewController.navigationProvider.routeVoiceController.speechSynthesizer.muted = true
-            
-            self.routeProgressCancellable?.cancel()
-            self.waypointArrivalCancellable?.cancel()
-            self.reroutingCancellable?.cancel()
-            self.sessionCancellable?.cancel()
-            self.locationUpdateCancellable?.cancel()
-            
             self.onCancelNavigation?()
         }
     }
