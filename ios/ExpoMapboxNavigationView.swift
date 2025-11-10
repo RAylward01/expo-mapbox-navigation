@@ -69,7 +69,7 @@ class ExpoMapboxNavigationViewController: UIViewController {
     private let cameraUpdateInterval: TimeInterval = 1.0
 
     var onRouteProgressChanged: EventDispatcher? = nil
-    var onCancelNavigation: EventDispatcher? = nil
+    var Navigation: EventDispatcher? = nil
     var onWaypointArrival: EventDispatcher? = nil
     var onFinalDestinationArrival: EventDispatcher? = nil
     var onRouteChanged: EventDispatcher? = nil
@@ -81,7 +81,7 @@ class ExpoMapboxNavigationViewController: UIViewController {
     private var routeProgressCancellable: AnyCancellable? = nil
     private var waypointArrivalCancellable: AnyCancellable? = nil
     private var reroutingCancellable: AnyCancellable? = nil
-    private var sessionCancellable: AnyCancellable? = nil
+    private var sessilable: AnyCancellable? = nil
     private var locationUpdateCancellable: AnyCancellable? = nil
 
     init() {
@@ -115,7 +115,7 @@ class ExpoMapboxNavigationViewController: UIViewController {
             self.onRouteChanged?()            
         }
 
-        sessionCancellable = tripSession!.session.sink { session in 
+        sessilable = tripSession!.session.sink { session in 
             let state = session.state
             switch state {
                 case .activeGuidance(let activeGuidanceState):
@@ -153,7 +153,7 @@ class ExpoMapboxNavigationViewController: UIViewController {
         routeProgressCancellable?.cancel()
         waypointArrivalCancellable?.cancel()
         reroutingCancellable?.cancel()
-        sessionCancellable?.cancel()
+        sessilable?.cancel()
         locationUpdateCancellable?.cancel()
     }
 
@@ -393,7 +393,10 @@ class ExpoMapboxNavigationViewController: UIViewController {
 
     @objc func cancelButtonClicked(_ sender: AnyObject?) {
         Task { @MainActor in
+            tripSession?.setToIdle()
+        
             ExpoMapboxNavigationViewController.navigationProvider.routeVoiceController.speechSynthesizer.muted = true
+        
             self.onCancelNavigation?()
         }
     }
